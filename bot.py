@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import aiohttp
 import yt_dlp
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -53,6 +53,17 @@ log = logging.getLogger("facebook-video-bot")
 
 rate_windows: dict[int, deque[float]] = defaultdict(deque)
 cache: dict[str, tuple[float, "VideoResult"]] = {}
+
+MENU_BUTTONS = [["إرسال رابط", "المساعدة"], ["عن البوت", "إعادة التشغيل"]]
+
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        MENU_BUTTONS,
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="أرسل رابط فيديو فيسبوك...",
+    )
 
 
 @dataclass
@@ -227,28 +238,70 @@ def option_for(result: VideoResult, quality: str) -> VideoOption | None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "هلا بيك 👋\n\nأرسل رابط فيديو عام من فيسبوك وأنا أستخرجلك خيارات HD وSD.\n\n"
-        "يدعم روابط watch وvideos وreel وshare وfb.watch.\n"
+        "أهلًا بيك\n\n"
+        "أرسل رابط فيديو عام من فيسبوك، وأنا أجهز لك خيارات التحميل المتاحة.\n\n"
+        "الروابط المدعومة: watch، videos، reel، share و fb.watch.\n"
         "الفيديوهات الخاصة أو المحذوفة ما تنفتح.",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "طريقة الاستخدام\n\n"
+        "1. انسخ رابط فيديو عام من فيسبوك.\n"
+        "2. أرسله هنا.\n"
+        "3. اختار HD أو SD.\n\n"
+        "ملاحظة: استخدم البوت فقط مع المقاطع التي تملك حق تنزيلها أو لديك إذن بها.",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def show_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "عن البوت\n\n"
+        "بوت لتحضير روابط فيديوهات فيسبوك العامة وإرسالها كملف أو كرابط مباشر إذا كان حجمها كبيرًا.\n\n"
+        "الحد المؤقت: 10 طلبات لكل مستخدم بالدقيقة.",
+        reply_markup=main_keyboard(),
     )
 
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
+    button = update.message.text.strip()
+    if button == "المساعدة":
+        await show_help(update, context)
+        return
+    if button == "عن البوت":
+        await show_about(update, context)
+        return
+    if button in {"إرسال رابط", "إعادة التشغيل"}:
+        await update.message.reply_text(
+            "أرسل رابط فيديو عام من فيسبوك هنا.",
+            reply_markup=main_keyboard(),
+        )
+        return
     match = URL_RE.search(update.message.text)
     url = normalize_facebook_url(match.group(0) if match else "")
     if not url:
-        await update.message.reply_text("الرابط مو رابط فيسبوك صحيح. أرسل رابط فيديو عام يبدأ بـ facebook.com أو fb.watch.")
+        await update.message.reply_text(
+            "الرابط غير صالح. أرسل رابط فيديو عام يبدأ بـ facebook.com أو fb.watch.",
+            reply_markup=main_keyboard(),
+        )
         return
     user_id = update.effective_user.id if update.effective_user else update.message.chat_id
     if not allowed_request(user_id):
-        await update.message.reply_text("وصلت للحد المؤقت: مسموح 10 طلبات بالدقيقة. جرّب بعد شوي.")
+        await update.message.reply_text(
+            "وصلت للحد المؤقت: 10 طلبات بالدقيقة. جرّب بعد قليل.",
+            reply_markup=main_keyboard(),
+        )
         return
 
     clean_expired_cache()
     waiting = await update.message.reply_text("جاري المعالجة... ⏳")
     try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         cached = cache.get(url)
         if cached and time.time() - cached[0] <= CACHE_TTL:
             result = cached[1]
@@ -304,21 +357,35 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_VIDEO)
         size = option.filesize or await fetch_video_size(option.url)
         if size and size > MAX_UPLOAD_BYTES:
-            await query.message.reply_text(f"الفيديو أكبر من حد الإرسال داخل تلگرام. هذا رابط التحميل المباشر ({quality.upper()}):\n{option.url}")
+            await query.message.reply_text(
+                f"الفيديو أكبر من حد الإرسال داخل تيليگرام.\n\nرابط التحميل المباشر ({quality.upper()}):\n{option.url}",
+                reply_markup=main_keyboard(),
+            )
             return
         target = DOWNLOAD_DIR / f"{secrets.token_hex(12)}.mp4"
         downloaded = await download_if_small(option, target)
         if not downloaded:
-            await query.message.reply_text(f"تعذر إرساله كملف أو حجمه أكبر من الحد. هذا رابط التحميل المباشر:\n{option.url}")
+            await query.message.reply_text(
+                f"تعذر إرساله كملف أو حجمه أكبر من الحد.\n\nرابط التحميل المباشر:\n{option.url}",
+                reply_markup=main_keyboard(),
+            )
             return
         try:
             with target.open("rb") as video_file:
-                await query.message.reply_video(video=InputFile(video_file, filename="facebook-video.mp4"), caption=result.title[:900], supports_streaming=True)
+                await query.message.reply_video(
+                    video=InputFile(video_file, filename="facebook-video.mp4"),
+                    caption=result.title[:900],
+                    supports_streaming=True,
+                    reply_markup=main_keyboard(),
+                )
         finally:
             target.unlink(missing_ok=True)
     except Exception:
         log.exception("callback failed")
-        await query.message.reply_text("صار خطأ أثناء تجهيز الفيديو. جرّب إرسال الرابط من جديد.")
+        await query.message.reply_text(
+            "صار خطأ أثناء تجهيز الفيديو. جرّب إرسال الرابط من جديد.",
+            reply_markup=main_keyboard(),
+        )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -333,6 +400,8 @@ def main() -> None:
     start_health_server()
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", show_help))
+    application.add_handler(CommandHandler("menu", start))
     application.add_handler(CallbackQueryHandler(download_callback, pattern=r"^(dl|ds):"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     application.add_error_handler(error_handler)
