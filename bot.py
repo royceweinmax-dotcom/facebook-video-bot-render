@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import threading
 import time
 from collections import defaultdict, deque
@@ -34,6 +35,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CACHE_TTL = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 MAX_REQUESTS = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "10"))
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(49 * 1024 * 1024)))
+MAX_SOURCE_BYTES = int(os.getenv("MAX_SOURCE_BYTES", str(200 * 1024 * 1024)))
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "./downloads"))
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -229,7 +231,7 @@ async def fetch_video_size(url: str) -> int | None:
         return None
 
 
-async def download_if_small(option: VideoOption, target: Path) -> bool:
+async def download_if_small(option: VideoOption, target: Path, max_bytes: int = MAX_UPLOAD_BYTES) -> bool:
     timeout = aiohttp.ClientTimeout(total=180, connect=15, sock_read=45)
     headers = {"User-Agent": os.getenv("USER_AGENT", "Mozilla/5.0")}
     total = 0
@@ -238,12 +240,12 @@ async def download_if_small(option: VideoOption, target: Path) -> bool:
             async with session.get(option.url, allow_redirects=True) as response:
                 response.raise_for_status()
                 content_length = response.headers.get("Content-Length")
-                if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+                if content_length and int(content_length) > max_bytes:
                     return False
                 with target.open("wb") as output:
                     async for chunk in response.content.iter_chunked(256 * 1024):
                         total += len(chunk)
-                        if total > MAX_UPLOAD_BYTES:
+                        if total > max_bytes:
                             output.close()
                             target.unlink(missing_ok=True)
                             return False
@@ -252,6 +254,27 @@ async def download_if_small(option: VideoOption, target: Path) -> bool:
     except Exception:
         target.unlink(missing_ok=True)
         log.exception("download failed")
+        return False
+
+
+async def compress_for_telegram(source: Path, target: Path) -> bool:
+    """Compress a larger source video to fit Telegram's standard bot limit."""
+    try:
+        command = [
+            "ffmpeg", "-y", "-i", str(source),
+            "-vf", "scale=-2:720:force_original_aspect_ratio=decrease",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+            "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+            str(target),
+        ]
+        await asyncio.to_thread(
+            subprocess.run, command, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=True, timeout=180,
+        )
+        return target.exists() and target.stat().st_size <= MAX_UPLOAD_BYTES
+    except Exception:
+        target.unlink(missing_ok=True)
+        log.exception("video compression failed")
         return False
 
 
@@ -391,17 +414,40 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text("انتهت صلاحية النتيجة. أرسل الرابط مرة ثانية.")
             return
         result: VideoResult = cached[1]
-        quality = "hd" if prefix == "dl" else "sd"
+        quality = "hd" if prefix in {"dl", "dc"} else "sd"
         option = option_for(result, quality)
         if not option:
             await query.edit_message_text("هذه الجودة غير متوفرة لهذا الفيديو.")
             return
         await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_VIDEO)
         size = option.filesize or await fetch_video_size(option.url)
+        if prefix == "dc":
+            source = DOWNLOAD_DIR / f"{secrets.token_hex(12)}-source.mp4"
+            target = DOWNLOAD_DIR / f"{secrets.token_hex(12)}-compressed.mp4"
+            try:
+                downloaded = await download_if_small(option, source, MAX_SOURCE_BYTES)
+                if not downloaded or not await compress_for_telegram(source, target):
+                    await query.message.reply_text(
+                        "تعذر ضغط الفيديو إلى حجم مناسب للإرسال. استخدم رابط HD المباشر.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رابط HD المباشر", url=option.url)]]),
+                    )
+                    return
+                with target.open("rb") as video_file:
+                    await query.message.reply_video(
+                        video=InputFile(video_file, filename="facebook-video-compressed.mp4"),
+                        caption=result.title[:900] + "\n\nتم ضغط الفيديو تلقائيًا.",
+                        supports_streaming=True,
+                        reply_markup=main_keyboard(),
+                    )
+            finally:
+                source.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+            return
         if size and size > MAX_UPLOAD_BYTES:
             if quality == "hd" and result.sd and result.sd.url != option.url:
                 fallback_keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✦ تحميل SD بدلًا من HD", callback_data="ds:" + key)],
+                    [InlineKeyboardButton("✦ ضغط HD وإرساله", callback_data="dc:" + key)],
                     [InlineKeyboardButton("رابط HD المباشر", url=option.url)],
                 ])
                 await query.message.reply_text(
@@ -455,7 +501,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", show_help))
     application.add_handler(CommandHandler("menu", start))
-    application.add_handler(CallbackQueryHandler(download_callback, pattern=r"^(dl|ds):"))
+    application.add_handler(CallbackQueryHandler(download_callback, pattern=r"^(dl|ds|dc):"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     application.add_error_handler(error_handler)
     log.info("bot started")
