@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 
 import aiohttp
 import yt_dlp
@@ -119,6 +119,23 @@ def normalize_facebook_url(value: str) -> str | None:
     return value
 
 
+def facebook_candidates(url: str) -> list[str]:
+    """Return safe variants for Facebook share links before giving up."""
+    parsed = urlparse(url)
+    clean = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    candidates = [url, clean]
+    if "/share/" in parsed.path:
+        for host in ("www.facebook.com", "m.facebook.com", "mbasic.facebook.com"):
+            candidates.append(urlunparse((parsed.scheme, host, parsed.path, "", "", "")))
+        # Facebook sometimes wraps the original share URL in a redirect parameter.
+        for key in ("share_url", "u", "url"):
+            for nested in parse_qs(parsed.query).get(key, []):
+                nested = unquote(nested)
+                if nested.startswith(("http://", "https://")):
+                    candidates.append(nested)
+    return list(dict.fromkeys(candidates))
+
+
 def allowed_request(user_id: int) -> bool:
     now = time.time()
     window = rate_windows[user_id]
@@ -189,9 +206,15 @@ def extract_video(url: str) -> VideoResult:
             "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
         },
     }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
-    return choose_options(info)
+    last_error: Exception | None = None
+    for candidate in facebook_candidates(url):
+        try:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(candidate, download=False)
+            return choose_options(info)
+        except Exception as exc:
+            last_error = exc
+    raise last_error or RuntimeError("Facebook link could not be extracted")
 
 
 async def fetch_video_size(url: str) -> int | None:
@@ -338,7 +361,16 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await waiting.delete()
     except Exception as exc:
         log.warning("extraction failed for %s: %s", url, exc)
-        await waiting.edit_text("ما لگيت الفيديو. ممكن يكون خاص أو محذوف أو الرابط غير صحيح.")
+        error_text = str(exc).lower()
+        if "login" in error_text or "unsupported url" in error_text or "something went wrong" in error_text:
+            message = (
+                "تعذر الوصول إلى هذا الرابط من Facebook.\n\n"
+                "الرابط من نوع مشاركة مختصر، وFacebook قد يطلب تسجيل دخول أو يمنع الوصول من الخادم.\n"
+                "افتح الفيديو واختر نسخ الرابط مرة ثانية، أو أرسل رابطًا عامًا مباشرًا من نوع /watch أو /videos."
+            )
+        else:
+            message = "ما لگيت الفيديو. ممكن يكون خاص أو محذوف أو الرابط غير صحيح."
+        await waiting.edit_text(message)
 
 
 def _cache_key(url: str, result: VideoResult) -> str:
