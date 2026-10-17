@@ -1,0 +1,5 @@
+[project]
+name = "facebook-video-bot"
+version = "1.0.0"
+description = "Arabic Telegram bot for public Facebook video links"
+requires-python = ">=3.11"
