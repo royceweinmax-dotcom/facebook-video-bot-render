@@ -399,6 +399,17 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_VIDEO)
         size = option.filesize or await fetch_video_size(option.url)
         if size and size > MAX_UPLOAD_BYTES:
+            if quality == "hd" and result.sd and result.sd.url != option.url:
+                fallback_keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✦ تحميل SD بدلًا من HD", callback_data="ds:" + key)],
+                    [InlineKeyboardButton("رابط HD المباشر", url=option.url)],
+                ])
+                await query.message.reply_text(
+                    "حجم فيديو HD أكبر من حد الإرسال في تيليگرام.\n\n"
+                    "اضغط الزر التالي لإرسال نسخة SD بحجم مناسب، أو استخدم رابط HD المباشر:",
+                    reply_markup=fallback_keyboard,
+                )
+                return
             await query.message.reply_text(
                 f"الفيديو أكبر من حد الإرسال داخل تيليگرام.\n\nرابط التحميل المباشر ({quality.upper()}):\n{option.url}",
                 reply_markup=main_keyboard(),
