@@ -54,7 +54,7 @@ log = logging.getLogger("facebook-video-bot")
 rate_windows: dict[int, deque[float]] = defaultdict(deque)
 cache: dict[str, tuple[float, "VideoResult"]] = {}
 
-MENU_BUTTONS = [["⭐ إرسال رابط", "⭐ المساعدة"], ["⭐ عن البوت", "⭐ إعادة التشغيل"]]
+MENU_BUTTONS = [["✦ إرسال رابط", "✦ المساعدة"], ["✦ عن البوت", "✦ إعادة التشغيل"]]
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -62,7 +62,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         MENU_BUTTONS,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="⭐ أرسل رابط فيديو فيسبوك...",
+        input_field_placeholder="✦ أرسل رابط فيديو فيسبوك...",
     )
 
 
@@ -259,9 +259,19 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def show_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "عن البوت\n\n"
-        "بوت لتحضير روابط فيديوهات فيسبوك العامة وإرسالها كملف أو كرابط مباشر إذا كان حجمها كبيرًا.\n\n"
-        "الحد المؤقت: 10 طلبات لكل مستخدم بالدقيقة.",
+        "✦ عن البوت\n\n"
+        "بوت تحميل فيديوهات فيسبوك العامة بسرعة وسهولة.\n\n"
+        "✦ المميزات:\n"
+        "• استخراج روابط الفيديو العامة.\n"
+        "• اختيار جودة HD أو SD.\n"
+        "• إرسال الفيديو كملف داخل تيليگرام.\n"
+        "• إرسال رابط مباشر إذا كان حجم الفيديو كبيرًا.\n"
+        "• دعم روابط watch وvideos وreel وshare وfb.watch.\n"
+        "• إظهار حالة المعالجة والإرسال للمستخدم.\n"
+        "• لوحة أزرار ثابتة وسهلة الاستخدام.\n"
+        "• حماية مؤقتة من كثرة الطلبات.\n\n"
+        "✦ المالك والمطور: @bbayyy\n"
+        "✦ الحد المؤقت: 10 طلبات لكل مستخدم بالدقيقة.",
         reply_markup=main_keyboard(),
     )
 
@@ -270,13 +280,13 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message or not update.message.text:
         return
     button = update.message.text.strip()
-    if button == "⭐ المساعدة":
+    if button == "✦ المساعدة":
         await show_help(update, context)
         return
-    if button == "⭐ عن البوت":
+    if button == "✦ عن البوت":
         await show_about(update, context)
         return
-    if button in {"⭐ إرسال رابط", "⭐ إعادة التشغيل"}:
+    if button in {"✦ إرسال رابط", "✦ إعادة التشغيل"}:
         await update.message.reply_text(
             "أرسل رابط فيديو عام من فيسبوك هنا.",
             reply_markup=main_keyboard(),
@@ -299,7 +309,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     clean_expired_cache()
-    waiting = await update.message.reply_text("⭐ جارٍ تحليل الرابط... ⏳")
+    waiting = await update.message.reply_text("✦ جارٍ تحليل الرابط... ⏳")
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         cached = cache.get(url)
@@ -313,11 +323,11 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         buttons = []
         if result.hd:
-            buttons.append(InlineKeyboardButton("⭐ تحميل HD", callback_data="dl:" + _cache_key(url, result)))
+            buttons.append(InlineKeyboardButton("✦ تحميل HD", callback_data="dl:" + _cache_key(url, result)))
         if result.sd:
-            buttons.append(InlineKeyboardButton("⭐ تحميل SD", callback_data="ds:" + _cache_key(url, result)))
+            buttons.append(InlineKeyboardButton("✦ تحميل SD", callback_data="ds:" + _cache_key(url, result)))
         keyboard = InlineKeyboardMarkup([buttons])
-        caption = f"⭐ <b>{html.escape(result.title)}</b>\n\nاختار الجودة المطلوبة:"
+        caption = f"✦ <b>{html.escape(result.title)}</b>\n\nاختار الجودة المطلوبة:"
         if result.thumbnail:
             try:
                 await update.message.reply_photo(photo=result.thumbnail, caption=caption, parse_mode="HTML", reply_markup=keyboard)
