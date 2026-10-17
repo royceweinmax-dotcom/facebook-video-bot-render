@@ -5,11 +5,13 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import aiohttp
@@ -67,6 +69,30 @@ class VideoResult:
     sd: VideoOption | None
     source_url: str
     created_at: float
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path in {"/", "/health"}:
+            body = b"facebook-video-bot is running"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+
+def start_health_server() -> None:
+    port = int(os.getenv("PORT", "10000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log.info("health server listening on port %s", port)
 
 
 def normalize_facebook_url(value: str) -> str | None:
@@ -302,6 +328,7 @@ def main() -> None:
         raise SystemExit("BOT_TOKEN غير مضبوط. انسخ .env.example إلى .env وضع التوكن داخله.")
     if not shutil.which("ffmpeg"):
         log.warning("ffmpeg غير موجود؛ استخراج الروابط سيعمل، لكن الدمج المتقدم غير متاح.")
+    start_health_server()
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(download_callback, pattern=r"^(dl|ds):"))
